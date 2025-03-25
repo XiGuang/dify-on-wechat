@@ -10,6 +10,7 @@ from bridge.reply import *
 from channel.channel import Channel
 from common.dequeue import Dequeue
 from common import memory
+from common.memory_manager import MemoryManager
 from plugins import *
 
 try:
@@ -27,6 +28,7 @@ class ChatChannel(Channel):
     futures = {}  # 记录每个session_id提交到线程池的future对象, 用于重置会话时把没执行的future取消掉，正在执行的不会被取消
     sessions = {}  # 用于控制并发，每个session_id同时只能有一个context在处理
     lock = threading.Lock()  # 用于控制对sessions的访问
+    memory_manager = MemoryManager(conf().get("memory_summarize_interval", 24 * 3600), conf().get("memory_clean_interval", 7 * 24 * 3600))
 
     def __init__(self):
         _thread = threading.Thread(target=self.consume)
@@ -90,9 +92,14 @@ class ChatChannel(Channel):
             context = e_context["context"]
             if e_context.is_pass() or context is None:
                 return context
-            if cmsg.from_user_id == self.user_id and not config.get("trigger_by_self", True):
-                logger.debug("[chat_channel]self message skipped")
-                return None
+            if cmsg.from_user_id == self.user_id:
+                if config.get("enable_memory",False):
+                    self.memory_manager.add_message(context["session_id"], cmsg,from_self=True)
+                if not config.get("trigger_by_self", True):
+                    logger.debug("[chat_channel]self message skipped")
+                    return None
+            elif config.get("enable_memory",False):
+                self.memory_manager.add_message(context["session_id"], cmsg)
 
         # 消息内容匹配过程，并处理content
         if ctype == ContextType.TEXT:
@@ -101,6 +108,7 @@ class ChatChannel(Channel):
                 # 校验关键字
                 match_prefix = check_prefix(content, conf().get("group_chat_prefix"))
                 match_contain = check_contain(content, conf().get("group_chat_keyword"))
+                # 关键字匹配上才回复
                 flag = False
                 if context["msg"].to_user_id != context["msg"].actual_user_id:
                     if match_prefix is not None or match_contain is not None:
@@ -195,7 +203,10 @@ class ChatChannel(Channel):
             logger.debug("[chat_channel] ready to handle context: type={}, content={}".format(context.type, context.content))
             if context.type == ContextType.TEXT or context.type == ContextType.IMAGE_CREATE:  # 文字和图片消息
                 context["channel"] = e_context["channel"]
-                reply = super().build_reply_content(context.content, context)
+                input_msg=context.content
+                if conf().get("enable_memory",False):
+                    input_msg=self.memory_manager.get_memories(context["session_id"],conf().get("recent_k_memory",10),conf().get("relevant_k_memory",3))+input_msg
+                reply = super().build_reply_content(input_msg, context)
             elif context.type == ContextType.VOICE:  # 语音消息
                 cmsg = context["msg"]
                 cmsg.prepare()
