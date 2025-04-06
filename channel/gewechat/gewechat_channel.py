@@ -241,7 +241,7 @@ class Query:
             return "success"
         
         if channel.user_id == None:
-            channel.user_id = gewechat_msg.msg_data['FromUserName']['string']
+            channel.user_id = gewechat_msg.msg.get('Wxid')
 
         context = channel._compose_context(
             gewechat_msg.ctype,

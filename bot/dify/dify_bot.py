@@ -5,7 +5,6 @@ import mimetypes
 import threading
 import json
 
-
 import requests
 from urllib.parse import urlparse, unquote
 
@@ -22,13 +21,18 @@ from config import conf
 
 UNKNOWN_ERROR_MSG = "我暂时遇到了一些问题，请您稍后重试~"
 
+
 class DifyBot(Bot):
     def __init__(self):
         super().__init__()
         self.sessions = DifySessionManager(DifySession, model=conf().get("model", const.DIFY))
 
-    def reply(self, query, context: Context=None):
+    def reply(self, query, context: Context = None):
         # acquire reply content
+        if context is None:
+            logger.debug("[DIFY] Context cannot be None")
+            return Reply(ReplyType.ERROR, "Context cannot be None")
+            
         if context.type == ContextType.TEXT or context.type == ContextType.IMAGE_CREATE:
             if context.type == ContextType.IMAGE_CREATE:
                 query = conf().get('image_create_prefix', ['画'])[0] + query
@@ -42,9 +46,10 @@ class DifyBot(Bot):
             elif channel_type in ["wechatcom_app", "wechatmp", "wechatmp_service", "wechatcom_service", "web"]:
                 user = context["msg"].other_user_id if context.get("msg") else "default"
             else:
-                return Reply(ReplyType.ERROR, f"unsupported channel type: {channel_type}, now dify only support wx, wechatcom_app, wechatmp, wechatmp_service channel")
+                return Reply(ReplyType.ERROR,
+                             f"unsupported channel type: {channel_type}, now dify only support wx, wechatcom_app, wechatmp, wechatmp_service channel")
             logger.debug(f"[DIFY] dify_user={user}")
-            user = user if user else "default" # 防止用户名为None，当被邀请进的群未设置群名称时用户名为None
+            user = user if user else "default"  # 防止用户名为None，当被邀请进的群未设置群名称时用户名为None
             session = self.sessions.get_session(session_id, user)
             if context.get("isgroup", False):
                 # 群聊：根据是否是共享会话群来决定是否设置用户信息
@@ -62,15 +67,28 @@ class DifyBot(Bot):
                 session.set_room_info('', '')
 
             # 打印设置的session信息
-            logger.debug(f"[DIFY] Session user and room info - user_id: {session.get_user_id()}, user_name: {session.get_user_name()}, room_id: {session.get_room_id()}, room_name: {session.get_room_name()}")
+            logger.debug(
+                f"[DIFY] Session user and room info - user_id: {session.get_user_id()}, user_name: {session.get_user_name()}, room_id: {session.get_room_id()}, room_name: {session.get_room_name()}")
             logger.debug(f"[DIFY] session={session} query={query}")
 
             reply, err = self._reply(query, session, context)
-            if err != None:
+            if err is not None:
                 dify_error_reply = conf().get("dify_error_reply", None)
                 error_msg = dify_error_reply if dify_error_reply else err
                 reply = Reply(ReplyType.TEXT, error_msg)
             return reply
+        elif context.type == ContextType.FUNCTION:
+            # 处理其他模块的函数调用
+            if context.get("function_name",None) == "summarize":
+                session_id = context["session_id"]
+                session = self.sessions.get_session(session_id, 'default')
+                reply, err = self._reply(query, session, context)
+                if err is not None:
+                    logger.error(err)
+                    dify_error_reply = conf().get("dify_error_reply", None)
+                    error_msg = dify_error_reply if dify_error_reply else err
+                    reply = Reply(ReplyType.TEXT, error_msg)
+                return reply
         else:
             reply = Reply(ReplyType.ERROR, "Bot不支持处理{}类型的消息".format(context.type))
             return reply
@@ -96,7 +114,10 @@ class DifyBot(Bot):
 
     def _reply(self, query: str, session: DifySession, context: Context):
         try:
-            session.count_user_message() # 限制一个conversation中消息数，防止conversation过长
+            session.count_user_message()  # 限制一个conversation中消息数，防止conversation过长
+            if context.get("function_name",None) == "summarize":
+                # 处理函数调用
+                return self._handle_chatbot(query, session, context)
             dify_app_type = self._get_dify_conf(context, "dify_app_type", 'chatbot')
             if dify_app_type == 'chatbot' or dify_app_type == 'chatflow':
                 return self._handle_chatbot(query, session, context)
@@ -114,7 +135,10 @@ class DifyBot(Bot):
             return None, UNKNOWN_ERROR_MSG
 
     def _handle_chatbot(self, query: str, session: DifySession, context: Context):
-        api_key = self._get_dify_conf(context, "dify_api_key", '')
+        if context.get("function_name",None) == "summarize":
+            api_key = self._get_dify_conf(context, "dify_summarize_api_key", '')
+        else:
+            api_key = self._get_dify_conf(context, "dify_api_key", '')
         api_base = self._get_dify_conf(context, "dify_api_base", "https://api.dify.ai/v1")
         chat_client = ChatClient(api_key, api_base)
         response_mode = 'blocking'
@@ -128,6 +152,7 @@ class DifyBot(Bot):
             conversation_id=payload['conversation_id'],
             files=files
         )
+
 
         if response.status_code != 200:
             error_info = f"[DIFY] payload={payload} response text={response.text} status_code={response.status_code}"
@@ -259,7 +284,7 @@ class DifyBot(Bot):
         response = chat_client.create_chat_message(
             inputs=payload['inputs'],
             query=payload['query'],
-            user= payload['user'],
+            user=payload['user'],
             response_mode=payload['response_mode'],
             conversation_id=payload['conversation_id'],
             files=files
@@ -476,7 +501,7 @@ class DifyBot(Bot):
 
         return merged_message, conversation_id
 
-    def _append_agent_message(self, accumulated_agent_message,  merged_message):
+    def _append_agent_message(self, accumulated_agent_message, merged_message):
         if accumulated_agent_message:
             merged_message.append({
                 'type': 'agent_message',
@@ -496,7 +521,8 @@ class DifyBot(Bot):
         try:
             friendly_error_msg = UNKNOWN_ERROR_MSG
             error_data = json.loads(response_text)
-            if status_code == 400 and "agent chat app does not support blocking mode" in error_data.get("message", "").lower():
+            if status_code == 400 and "agent chat app does not support blocking mode" in error_data.get("message",
+                                                                                                        "").lower():
                 friendly_error_msg = "[DIFY] 请把config.json中的dify_app_type修改为agent再重启机器人尝试"
                 print_red(friendly_error_msg)
             elif status_code == 401 and error_data.get("code").lower() == "unauthorized":

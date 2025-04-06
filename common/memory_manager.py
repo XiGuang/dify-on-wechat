@@ -7,9 +7,11 @@ from datetime import datetime
 
 from bot import bot_factory
 from bridge.bridge import Bridge
+from bridge.context import Context, ContextType
 from channel.chat_message import ChatMessage
 from common.short_term_memory import ShortTermMemory
 from common.long_term_memory import LongTermMemory
+from config import conf
 
 logger = logging.getLogger(__name__)
 
@@ -65,72 +67,86 @@ class MemoryManager:
             self.long_term_memories[session_id] = LongTermMemory(session_id)
         return self.long_term_memories[session_id]
     
-    def add_message(self, session_id: str, message: ChatMessage,from_self:bool=False) -> None:
+    def add_message(self, message: ChatMessage, from_self:bool=False) -> None:
         """添加消息到短期记忆"""
-        stm = self.get_short_term_memory(session_id)
+        stm = self.get_short_term_memory(message.from_user_id)
         stm.add(message,from_self)
         
         # 检查是否需要总结
-        now = time.time()
-        if session_id not in self.last_summarize_time:
-            self.last_summarize_time[session_id] = now
-        elif now - self.last_summarize_time[session_id] >= self.summarize_interval:
-            self._summarize_short_term_memory(session_id)
-            self.last_summarize_time[session_id] = now
+        if len(stm) > conf().get("recent_k_memory",20):
+            self._summarize_short_term_memory(message.from_user_id,conf().get("memory_summarize_length",10))
     
     def query_relevant_memories(self, session_id: str, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """查询用户相关的记忆"""
         ltm = self.get_long_term_memory(session_id)
         return ltm.query(query, top_k)
 
-    def get_recent_memories(self, session_id: str, top_k: int = 5) -> List[Dict[str, Any]]:
+    def get_recent_memories(self, session_id: str, top_k: int = 5) -> list[str]:
         """获取用户最近的记忆"""
         stm = self.get_short_term_memory(session_id)
         return stm.get_recent(top_k)
 
-    def get_memories(self, session_id: str, recent_top_k: int = 10,relevant_top_k:int=5) -> List[Dict[str, Any]]:
+    def get_memories(self, session_id: str, query:str, recent_top_k: int = 10,relevant_top_k:int=5) -> str:
         """获取用户最近的记忆以及相关的长期记忆"""
         recent_memories = self.get_recent_memories(session_id, recent_top_k)
-        relevant_memories = self.query_relevant_memories(session_id, query, relevant_top_k)
+        # relevant_memories = self.query_relevant_memories(session_id, query, relevant_top_k)
         # 合并记忆
-        memories = "相关长期记忆：\n"
-        for memory in relevant_memories:
+        memories = ""
+        # memories = "相关长期记忆：\n"
+        # for memory in relevant_memories:
+        #     memories += f"{memory}\n"
+        memories += "[聊天历史(你的回复记录为bot)]\n"
+        for memory in recent_memories[:-1]:
             memories += f"{memory}\n"
-        memories += "最近的聊天历史：\n"
-        for memory in recent_memories[1:]:
-            memories += f"{memory}\n"
-        memories += f"当前用户回复:\n"
+        memories += f"[当前对话]\n"
         return memories
         
 
     
-    def _summarize_short_term_memory(self, session_id: str) -> None:
+    def _summarize_short_term_memory(self, session_id: str,length:int = 20) -> None:
         """总结短期记忆并存入长期记忆"""
         stm = self.get_short_term_memory(session_id)
         ltm = self.get_long_term_memory(session_id)
         
-        # 获取最近消息
-        recent_messages = stm.get_recent()
-        if not recent_messages:
+        # 获取最远的消息
+        recent_messages = stm.get_back(length)
+        if len(recent_messages)<length:
             return
             
         # 提取关键信息
         all_content = "\n".join([msg for msg in recent_messages])
+        all_content = f"[聊天记录](你的回复标记为bot)\n{all_content}"
+        context=Context(ContextType.FUNCTION, all_content)
         
         # 生成总结
         session_id = f"memory_summary_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-        session = self.bot.sessions.build_session(session_id, system_prompt=SUMMARY_PROMPT)
-        session.add_query(f"需要你总结的聊天记录如下：{all_content}")
-        result = self.bot.reply_text(session)
+        context["session_id"]= session_id
+        context["function_name"] = "summarize"
+        result = self.bot.reply(all_content,context)
             
         total_tokens, completion_tokens, summary = (
             result['total_tokens'],
             result['completion_tokens'],
             result['content']
         )
-            
-        # 将生成的总结添加到长期记忆
-        ltm.add(summary, importance=1.2)
+
+        logger.info(f"为用户 {session_id} 生成了总结: {summary}")
+
+        import json
+        # 总结输出的格式：{
+        #   "summarize":["content 1","content 2", ...]
+        # }
+        try:
+            summary = json.loads(summary)
+            summary = summary.get("summarize", summary)
+        except json.JSONDecodeError:
+            logger.error(f"总结解析错误: {summary}")
+            return
+
+        for content in summary:
+            # 将生成的总结添加到长期记忆
+            ltm.add(content, importance=1.2)
+        stm.delete_back(length)
     
     def _clean_outdated_memories(self) -> None:
         """清理过期记忆"""

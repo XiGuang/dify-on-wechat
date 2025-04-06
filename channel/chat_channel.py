@@ -2,6 +2,7 @@ import os
 import re
 import threading
 import time
+import random
 from asyncio import CancelledError
 from concurrent.futures import Future, ThreadPoolExecutor
 
@@ -12,6 +13,7 @@ from common.dequeue import Dequeue
 from common import memory
 from common.memory_manager import MemoryManager
 from plugins import *
+from channel.chat_message import ChatMessage
 
 try:
     from voice.audio_convert import any_to_wav
@@ -308,7 +310,25 @@ class ChatChannel(Channel):
 
     def _send(self, reply: Reply, context: Context, retry_cnt=0):
         try:
+            if conf().get("enable_memory",False):
+                self_memory=context["msg"]
+                self_memory.content=reply.content
+                self_memory.create_time=time.time()
+                self.memory_manager.add_message(self_memory,from_self=True)
             self.send(reply, context)
+            # 分段回复 todo: 取消注释
+            # if reply.type==ReplyType.TEXT and '\\' in reply.content:
+            #     replies=reply.content.split('\\')
+            #     for reply in replies:
+            #         if reply.strip()=='':
+            #             continue
+            #         reply=Reply(type=ReplyType.TEXT,content=reply)
+            #         self.send(reply, context)
+            #         # 随机等待
+            #         time.sleep(random.uniform(1, 3))
+            #     return
+            # else:
+            #     self.send(reply, context)
         except Exception as e:
             logger.error("[chat_channel] sendMsg error: {}".format(str(e)))
             if isinstance(e, NotImplementedError):

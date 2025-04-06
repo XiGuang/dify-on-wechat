@@ -78,6 +78,8 @@ class LongTermMemory:
             logger.warning("SentenceTransformers未安装，无法添加长期记忆")
             return -1
         
+        logger.debug(f"添加记忆到长期记忆: {content}")
+
         # 向量化内容
         vector = self.model.encode(content)
         vector_bytes = vector.numpy().tobytes()

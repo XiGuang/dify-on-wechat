@@ -208,6 +208,15 @@ available_setting = {
     "Minimax_group_id": "",
     "Minimax_base_url": "",
     "web_port": 9899,
+
+    # 记忆设置
+    "enable_memory": False,
+    "memory_summarize_interval": 3600,
+    "memory_clean_interval": 7 * 24 * 3600,
+    "memory_summarize_length": 10,
+    "recent_k_memory": 20,
+    "relevant_k_memory": 3,
+    "dify_summarize_api_key": "",
 }
 
 
