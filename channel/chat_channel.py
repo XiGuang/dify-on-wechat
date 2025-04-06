@@ -96,12 +96,12 @@ class ChatChannel(Channel):
                 return context
             if cmsg.from_user_id == self.user_id:
                 if config.get("enable_memory",False):
-                    self.memory_manager.add_message(context["session_id"], cmsg,from_self=True)
+                    self.memory_manager.add_message(cmsg,from_self=True)
                 if not config.get("trigger_by_self", True):
                     logger.debug("[chat_channel]self message skipped")
                     return None
             elif config.get("enable_memory",False):
-                self.memory_manager.add_message(context["session_id"], cmsg)
+                self.memory_manager.add_message(cmsg)
 
         # 消息内容匹配过程，并处理content
         if ctype == ContextType.TEXT:
@@ -207,7 +207,9 @@ class ChatChannel(Channel):
                 context["channel"] = e_context["channel"]
                 input_msg=context.content
                 if conf().get("enable_memory",False):
-                    input_msg=self.memory_manager.get_memories(context["session_id"],conf().get("recent_k_memory",10),conf().get("relevant_k_memory",3))+input_msg
+                    input_msg=(self.memory_manager.get_memories(context["msg"].from_user_id,context.content,conf().get("recent_k_memory",10),conf().get("relevant_k_memory",3))
+                               +context["msg"].actual_user_nickname+f'({time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())}):'
+                               +input_msg)
                 reply = super().build_reply_content(input_msg, context)
             elif context.type == ContextType.VOICE:  # 语音消息
                 cmsg = context["msg"]
